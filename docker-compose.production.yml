@@ -1,0 +1,142 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: careeros
+      POSTGRES_USER: careeros
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env for production}
+    volumes: [careeros_pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careeros"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://careeros:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env for production}@db:5432/careeros
+    command: ["python", "-m", "scripts.run_migrations"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build: ./backend
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+psycopg://careeros:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env for production}@db:5432/careeros
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?set FRONTEND_ORIGIN in .env, e.g. https://app.example.com}
+      JWT_SECRET: ${JWT_SECRET:?set a real random JWT_SECRET in .env for production}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set a real random ADMIN_API_KEY in .env for production}
+      # Required in production — app/main.py's startup guard refuses to
+      # boot without these (verified-email auth needs a real mail path).
+      SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST in .env for production — required for email verification/password reset}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?set SMTP_FROM_EMAIL in .env for production}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-CareerOS}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      # V23.2 — production must actually send email, never silently
+      # fall back to console mode (which only logs and never sends —
+      # correct for dev/test, wrong for a real deployment).
+      EMAIL_MODE: ${EMAIL_MODE:-smtp}
+      # Optional V6/V7 features — omit any of these to leave that feature disabled.
+      CAREER_AI_ANTHROPIC_API_KEY: ${CAREER_AI_ANTHROPIC_API_KEY:-}
+      INGESTION_ENABLED: ${INGESTION_ENABLED:-false}
+      INGESTION_REGISTRY_ENABLED: ${INGESTION_REGISTRY_ENABLED:-false}
+      INGESTION_ENRICH_DETAILS: ${INGESTION_ENRICH_DETAILS:-true}
+      INGESTION_AI_ENRICHMENT: ${INGESTION_AI_ENRICHMENT:-false}
+      # This file runs exactly one backend container, so the default
+      # (scheduler enabled, WEB_CONCURRENCY=1 from the Dockerfile) is
+      # already safe. If you scale this service up (`docker compose
+      # up --scale backend=N`) or raise WEB_CONCURRENCY, set
+      # SCHEDULER_ENABLED=false here and override it back to true in
+      # only one replica/worker — see app/scheduler.py's docstring.
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      # Optional Redis-backed rate limiter — falls back to in-memory
+      # (fine for a single instance) when unset.
+      REDIS_URL: ${REDIS_URL:-}
+      # V25.6 hardening switches (all optional; see docs/PRODUCTION_SECURITY_CHECKLIST.md):
+      #  - FORWARDED_ALLOW_IPS: trusted reverse-proxy address(es) so client IPs / rate limits are correct.
+      #  - METRICS_TOKEN: scrape /metrics with `Authorization: Bearer <token>` (endpoint is 403 without one).
+      #  - ADMIN_KEY_AUTH_ENABLED=false once named admin accounts exist (disables the shared X-Admin-Key).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      ADMIN_KEY_AUTH_ENABLED: ${ADMIN_KEY_AUTH_ENABLED:-true}
+      RETENTION_PURGE_ENABLED: ${RETENTION_PURGE_ENABLED:-false}
+    # BACKEND_BIND=127.0.0.1 when a reverse proxy on the same host terminates TLS in front of it.
+    ports: ["${BACKEND_BIND:-0.0.0.0}:8000:8000"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    volumes:
+      # V22.3 Application Documents write raw file bytes to disk (see
+      # app/applications/documents.py) — this must be a named volume,
+      # not the container's ephemeral filesystem, or every uploaded
+      # document is lost the next time this container is recreated
+      # (redeploy, `docker compose up --build`, image update, ...).
+      # The DB row survives (it's in Postgres), but the file it points
+      # to would silently 404 on download without this.
+      - careeros_app_documents:/app/var/uploads/application_documents
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Must be a build ARG, not just a runtime environment var —
+        # Next.js inlines NEXT_PUBLIC_* into the static client bundle
+        # at build time (see frontend/Dockerfile). Setting it only in
+        # `environment:` below has no effect on what the browser
+        # actually receives.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL, e.g. https://api.example.com/api/v1}
+        CSP_ENFORCE: ${CSP_ENFORCE:-false}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL, e.g. https://api.example.com/api/v1}
+    ports: ["${FRONTEND_BIND:-0.0.0.0}:3000:3000"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # V16 — optional, behind a profile so a default `docker compose up`
+  # doesn't start it: this project's rate limiter (app/core/rate_limit.py)
+  # works fine in-memory for the single-backend-replica topology this
+  # file runs by default. Only needed if you scale `backend` up (see
+  # the SCHEDULER_ENABLED note on the backend service above — you'd be
+  # making that same "more than one replica" decision anyway).
+  #
+  # Enable with:  docker compose --profile redis up
+  # and set REDIS_URL: redis://redis:6379/0 in the backend service's
+  # environment above (left unset by default so it's opt-in).
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    volumes: [careeros_redis:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  careeros_pg:
+  careeros_redis:
+  careeros_app_documents:

@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Correctness-focused ruleset for CI: syntax/undefined-name errors (F)
+# and pycodestyle errors (E) matter; we don't lint for import-sorting
+# or docstring style here since this project's own comments already
+# carry that context and a strict style gate would slow iteration
+# without catching real bugs.
+select = ["E", "F"]
+ignore = [
+    "E501",  # line length — line-length above already covers the common case; long doc/comment lines are fine
+]
