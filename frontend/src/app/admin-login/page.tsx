@@ -15,7 +15,7 @@ export default function Page(){
   async function go(){
     setMsg("");setBusy(true);
     try{
-      const r = await fetch(`${API}/api/v1/auth/admin/login`, {
+      const r = await fetch(`${API}/auth/admin/login`, {
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({email,password,remember_me:rememberMe,device_id:deviceId(),device_label:"Web browser"}),
       });
