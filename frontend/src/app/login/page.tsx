@@ -25,7 +25,17 @@ export default function Page(){
         const j=await post("/auth/candidate/login",{email,password,remember_me:rememberMe,device_id:deviceId(),device_label:"Web browser"});
         storeSession(j);location.href="/dashboard"
       }
-    }catch(e:any){setMsg(e.message)}finally{setBusy(false)}
+    }catch(e:any){
+      if(e.message.toLowerCase().includes("verify your email")){
+        setVerify(true);
+        setCode("");
+        setMsg("Your email is not verified. Enter the OTP sent to your email.");
+      }else{
+        setMsg(e.message);
+      }
+    }finally{
+      setBusy(false)
+    }
   }
   async function confirm(){
     setBusy(true);

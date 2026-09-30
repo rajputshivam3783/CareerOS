@@ -9,6 +9,7 @@ changes to service.py, templates.py, or any call site.
 
 from __future__ import annotations
 
+import httpx
 import logging
 import smtplib
 from dataclasses import dataclass
@@ -86,7 +87,65 @@ class SMTPProvider(EmailProvider):
             raise EmailSendError(f"SMTP delivery failed ({type(exc).__name__})") from exc
 
 
+class BrevoProvider(EmailProvider):
+    """Transactional email delivery through Brevo HTTP API."""
+
+    name = "brevo"
+
+    def send(self, message: OutgoingEmail) -> None:
+        if not settings.brevo_api_key or not settings.brevo_sender_email:
+            raise RuntimeError(
+                "EMAIL_MODE=brevo but BREVO_API_KEY/BREVO_SENDER_EMAIL is not configured"
+            )
+
+        payload = {
+            "sender": {
+                "name": settings.brevo_sender_name,
+                "email": settings.brevo_sender_email,
+            },
+            "to": [{"email": message.to}],
+            "subject": message.subject,
+            "textContent": message.text_body,
+        }
+
+        if message.html_body:
+            payload["htmlContent"] = message.html_body
+
+        try:
+            response = httpx.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "accept": "application/json",
+                    "api-key": settings.brevo_api_key,
+                    "content-type": "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+            response.raise_for_status()
+
+        except (httpx.HTTPError, OSError) as exc:
+            logger.error(
+                "Brevo send failed for template email to %s",
+                message.to,
+                exc_info=True,
+            )
+            raise EmailSendError(
+                f"Brevo delivery failed ({type(exc).__name__})"
+            ) from exc
+
+
 def get_provider() -> EmailProvider:
+    if settings.email_mode == "brevo":
+        if settings.is_production and (
+            not settings.brevo_api_key or not settings.brevo_sender_email
+        ):
+            raise RuntimeError(
+                "EMAIL_MODE=brevo but Brevo is not configured "
+                "(BREVO_API_KEY/BREVO_SENDER_EMAIL required)"
+            )
+        return BrevoProvider()
+
     if settings.email_mode == "smtp":
         if settings.is_production and (not settings.smtp_host or not settings.smtp_from_email):
             # Same guarantee app.services.email_service.send_email

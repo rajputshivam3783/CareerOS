@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # validation note in app/email/provider.py for why production must
     # not silently fall back to console mode.
     email_mode: str = "console"
+
+    # Brevo transactional email API
+    brevo_api_key: str | None = None
+    brevo_sender_email: str | None = None
+    brevo_sender_name: str = "CareerOS"
+
     email_max_retry_attempts: int = 4
     email_retry_backoff_seconds: int = 60
     email_queue_interval_minutes: int = 2
