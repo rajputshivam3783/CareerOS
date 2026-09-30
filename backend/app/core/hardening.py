@@ -199,8 +199,11 @@ def production_config_findings(
         errors.append("Production requires SMTP configuration for verified-email authentication")
     if auto_verify_email_in_tests:
         errors.append("AUTO_VERIFY_EMAIL_IN_TESTS must not be enabled in production (it bypasses email verification)")
-    if (email_mode or "").lower() != "smtp":
-        errors.append("EMAIL_MODE must be 'smtp' in production (console mode never delivers OTP or reset emails)")
+    if (email_mode or "").lower() not in {"smtp", "brevo"}:
+        errors.append(
+            "EMAIL_MODE must be 'smtp' or 'brevo' in production "
+            "(console mode never delivers OTP or reset emails)"
+        )
 
     origins = [o for o in cors_origins]
     if not origins:
